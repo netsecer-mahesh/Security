@@ -135,11 +135,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--policy-file",
-        default="Security\\Azure\\python\\azure_policies\\definitions\\deny-unapproved-public-ip.json"
+        default="\\Azure\\python\\azure_policies\\definitions\\deny-unapproved-public-ip.json"
     )
     parser.add_argument(
         "--parameter-file",
-        default="Security\\Azure\\python\\azure_policies\\parameters\\az_policy_unapproved_public-ip.parameters.json"
+        default="\\Azure\\python\\azure_policies\\parameters\\az_policy_unapproved_public-ip.parameters.json"
     )
 
     args = parser.parse_args()
