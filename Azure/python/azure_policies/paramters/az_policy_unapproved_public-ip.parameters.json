@@ -1,0 +1,12 @@
+
+{
+  "effect": {
+    "value": "Deny"
+  },
+  "tagName": {
+    "value": "Approved"
+  },
+  "tagValue": {
+    "value": "PIP"
+  }
+}
