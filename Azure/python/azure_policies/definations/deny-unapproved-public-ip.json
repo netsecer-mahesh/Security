@@ -1,0 +1,59 @@
+
+{
+  "properties": {
+    "displayName": "Deny Unapproved Public IP Addresses",
+    "description": "Restricts Azure Public IP resources to those carrying the required approval tag.",
+    "policyType": "Custom",
+    "mode": "All",
+    "metadata": {
+      "category": "Network Security",
+      "version": "1.0.0"
+    },
+    "parameters": {
+      "effect": {
+        "type": "String",
+        "defaultValue": "Deny",
+        "allowedValues": [
+          "Audit",
+          "Deny",
+          "Disabled"
+        ],
+        "metadata": {
+          "displayName": "Policy Effect",
+          "description": "Select Audit, Deny or Disabled."
+        }
+      },
+      "tagName": {
+        "type": "String",
+        "defaultValue": "Approved",
+        "metadata": {
+          "displayName": "Approval Tag Name"
+        }
+      },
+      "tagValue": {
+        "type": "String",
+        "defaultValue": "PIP",
+        "metadata": {
+          "displayName": "Required Approval Tag Value"
+        }
+      }
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "equals": "Microsoft.Network/publicIPAddresses"
+          },
+          {
+            "field": "[concat('tags[', parameters('tagName'), ']')]",
+            "notEquals": "[parameters('tagValue')]"
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('effect')]"
+      }
+    }
+  }
+}
