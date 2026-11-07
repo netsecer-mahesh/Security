@@ -10,7 +10,7 @@ API_VERSION = "2025-11-01"
 
 def az_rest(method, url, body=None):
     command = [
-        "az", "rest",
+        "cmd.exe", "/c", "az", "rest",
         "--method", method,
         "--url", url,
         "--output", "json"
@@ -135,11 +135,11 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--policy-file",
-        default="\\Azure\\python\\azure_policies\\definitions\\deny-unapproved-public-ip.json"
+        default="\\definitions\\deny-unapproved-public-ip.json"
     )
     parser.add_argument(
         "--parameter-file",
-        default="\\Azure\\python\\azure_policies\\parameters\\az_policy_unapproved_public-ip.parameters.json"
+        default="\\parameters\\az_policy_unapproved_public-ip.parameters.json"
     )
 
     args = parser.parse_args()
