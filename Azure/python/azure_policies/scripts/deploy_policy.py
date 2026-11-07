@@ -7,28 +7,52 @@ from pathlib import Path
 
 API_VERSION = "2025-11-01"
 
+import json
+import subprocess
+import tempfile
+import os
+
 
 def az_rest(method, url, body=None):
     command = [
-        "cmd.exe", "/c", "az", "rest",
+        "az.cmd",
+        "rest",
         "--method", method,
         "--url", url,
         "--output", "json"
     ]
 
-    if body is not None:
-        command.extend(["--body", json.dumps(body)])
+    temp_file = None
 
-    result = subprocess.run(
-        command,
-        capture_output=True,
-        text=True
-    )
+    try:
+        if body is not None:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                suffix=".json",
+                encoding="utf-8",
+                delete=False
+            ) as f:
+                json.dump(body, f)
+                temp_file = f.name
 
-    if result.returncode != 0:
-        raise RuntimeError(result.stderr)
+            command.extend(["--body", f"@{temp_file}"])
 
-    return json.loads(result.stdout) if result.stdout.strip() else {}
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            shell=True
+        )
+
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr)
+
+        return json.loads(result.stdout) if result.stdout.strip() else {}
+
+    finally:
+        if temp_file and os.path.exists(temp_file):
+            os.remove(temp_file)
+
 
 
 def deploy_policy(args):
