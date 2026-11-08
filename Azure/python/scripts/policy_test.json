@@ -1,6 +1,18 @@
 {
     "displayName": "Deny Unapproved Public IP",
     "mode": "All",
-    "policyType": "Custom",
-    "effect": "Deny"
+    "parameters": {
+        "effect": {
+            "type": "String",
+            "defaultValue": "Deny"
+        },
+        "tagName": {
+            "type": "String",
+            "defaultValue": "Approved"
+        },
+        "tagValue": {
+            "type": "String",
+            "defaultValue": "PIP"
+        }
+    }
 }
