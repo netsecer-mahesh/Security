@@ -1,0 +1,6 @@
+{
+    "displayName": "Deny Unapproved Public IP",
+    "mode": "All",
+    "policyType": "Custom",
+    "effect": "Deny"
+}
