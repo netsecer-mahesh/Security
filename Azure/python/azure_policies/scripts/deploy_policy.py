@@ -8,6 +8,9 @@ from pathlib import Path
 
 
 API_VERSION = "2025-11-01"
+ARM_ENDPOINT = "https://management.azure.com"
+
+# Resolve files relative to repository root
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 
@@ -76,36 +79,11 @@ def resolve_file(file_path):
     return path
 
 
-def find_initiative(mg, initiative_input, base_url):
+def find_initiative(mg, initiative_input):
     """
-    Resolve initiative using its exact resource name
-    or an explicitly supplied full resource ID.
+    Resolve initiative using its full ARM resource ID
+    or exact resource name.
     """
-
-    if initiative_input.startswith("/"):
-        expected_prefix = (
-            f"/providers/Microsoft.Management/"
-            f"managementGroups/{mg}/providers/"
-            f"Microsoft.Authorization/policySetDefinitions/"
-        )
-
-        if not initiative_input.lower().startswith(
-            expected_prefix.lower()
-        ):
-            raise ValueError(
-                "Initiative ID does not belong to "
-                f"Management Group {mg}: {initiative_input}"
-            )
-
-        return initiative_input
-
-    print("Discovering initiative resource ID...")
-
-    response = az_rest(
-        "GET",
-        f"{base_url}/policySetDefinitions"
-        f"?api-version={API_VERSION}"
-    )
 
     expected_prefix = (
         f"/providers/Microsoft.Management/"
@@ -113,32 +91,46 @@ def find_initiative(mg, initiative_input, base_url):
         f"Microsoft.Authorization/policySetDefinitions/"
     )
 
+    # Full ARM resource ID supplied
+    if initiative_input.startswith("/"):
+        if not initiative_input.lower().startswith(
+            expected_prefix.lower()
+        ):
+            raise ValueError(
+                "Initiative resource ID does not belong "
+                f"to Management Group {mg}"
+            )
+
+        print(f"Using initiative ID: {initiative_input}")
+        return initiative_input
+
+    # Discover initiative by exact resource name
+    mg_url = (
+        f"{ARM_ENDPOINT}/providers/Microsoft.Management/"
+        f"managementGroups/{mg}/providers/"
+        f"Microsoft.Authorization"
+    )
+
+    print("Discovering initiative resource ID...")
+
+    response = az_rest(
+        "GET",
+        f"{mg_url}/policySetDefinitions"
+        f"?api-version={API_VERSION}"
+    )
+
     definitions = response.get("value", [])
 
-    # Only consider initiatives defined directly at this MG.
-    exact_scope = [
-        item for item in definitions
-        if item.get("id", "").lower().startswith(
-            expected_prefix.lower()
-        )
-    ]
-
-    for item in exact_scope:
+    for item in definitions:
         if item.get("name") == initiative_input:
             print("Initiative found.")
             print(f"Resource ID: {item['id']}")
             return item["id"]
 
-    available = [
-        f"{item.get('name')} -> {item.get('id')}"
-        for item in exact_scope
-    ]
-
     raise ValueError(
-        f"Initiative '{initiative_input}' was not found "
-        f"directly at MG '{mg}'.\n"
-        "Available initiative resource IDs:\n"
-        + ("\n".join(available) if available else "None found.")
+        f"Initiative '{initiative_input}' not found "
+        f"at Management Group '{mg}'. "
+        "Supply its full ARM resource ID."
     )
 
 
@@ -160,45 +152,65 @@ def deploy_policy(args):
     policy_name = args.policy_name
     reference_id = args.reference_id or policy_name
 
-    base_url = (
-        "https://management.azure.com/providers/"
-        f"Microsoft.Management/managementGroups/{mg}/"
-        "providers/Microsoft.Authorization"
+    mg_scope = (
+        f"/providers/Microsoft.Management/"
+        f"managementGroups/{mg}"
     )
 
+    # ARM API URL base
+    base_url = (
+        f"{ARM_ENDPOINT}{mg_scope}"
+        "/providers/Microsoft.Authorization"
+    )
+
+    # IMPORTANT:
+    # Policy definition reference must be a relative ARM ID.
+    # Do not include https://management.azure.com
     policy_id = (
+        f"{mg_scope}/providers/Microsoft.Authorization/"
+        f"policyDefinitions/{policy_name}"
+    )
+
+    policy_url = (
         f"{base_url}/policyDefinitions/{policy_name}"
+        f"?api-version={API_VERSION}"
     )
 
     print("\n1. Publishing custom policy definition...")
 
     az_rest(
         "PUT",
-        f"{policy_id}?api-version={API_VERSION}",
+        policy_url,
         policy_data
     )
 
     print(f"SUCCESS: {policy_name}")
+    print(f"Policy ID: {policy_id}")
 
     print("\n2. Resolving initiative resource ID...")
 
     initiative_id = find_initiative(
         mg,
-        args.initiative,
-        base_url
+        args.initiative
+    )
+
+    initiative_url = (
+        f"{ARM_ENDPOINT}{initiative_id}"
+        f"?api-version={API_VERSION}"
     )
 
     print("\n3. Reading existing initiative...")
 
     existing = az_rest(
         "GET",
-        f"https://management.azure.com{initiative_id}"
-        f"?api-version={API_VERSION}"
+        initiative_url
     )
 
     properties = existing["properties"]
 
-    references = properties.get("policyDefinitions", [])
+    references = properties.get(
+        "policyDefinitions", []
+    )
 
     new_reference = {
         "policyDefinitionId": policy_id,
@@ -206,6 +218,7 @@ def deploy_policy(args):
         "parameters": parameters
     }
 
+    # Update existing reference or append new reference
     found = False
 
     for index, reference in enumerate(references):
@@ -216,24 +229,32 @@ def deploy_policy(args):
         ):
             references[index] = new_reference
             found = True
+            print("Existing policy reference will be updated.")
             break
 
     if not found:
         references.append(new_reference)
+        print("New policy reference will be added.")
 
     properties["policyDefinitions"] = references
+
+    # Preserve other existing initiative properties,
+    # including displayName, description, metadata,
+    # parameters, policyDefinitionGroups and version.
+    updated_body = {
+        "properties": properties
+    }
 
     print("\n4. Updating initiative...")
 
     az_rest(
         "PUT",
-        f"https://management.azure.com{initiative_id}"
-        f"?api-version={API_VERSION}",
-        {"properties": properties}
+        initiative_url,
+        updated_body
     )
 
     print("\nDEPLOYMENT SUCCESSFUL")
-    print("--------------------------------")
+    print("------------------------------------")
     print(f"Management Group : {mg}")
     print(f"Initiative ID    : {initiative_id}")
     print(f"Policy Name      : {policy_name}")
@@ -260,13 +281,12 @@ if __name__ == "__main__":
 
     parser.add_argument(
         "--initiative",
-        required=True,
-        help="Exact initiative resource name or full resource ID"
+        required=True
     )
 
     parser.add_argument(
         "--policy-name",
-        default="Deny-Unapproved-Public-IP-Addresses"
+        default="deny-unapproved-public-ip"
     )
 
     parser.add_argument(
