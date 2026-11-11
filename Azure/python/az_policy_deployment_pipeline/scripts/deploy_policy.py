@@ -40,8 +40,6 @@ def load_deployment_config(selected_path):
         deployment_config = json.load(file)
 
     return deployment_config
-
-
 deployment_config = load_deployment_config(selected_path)
 
 required_keys = ["managementGroup", "initiativeId"]
@@ -88,5 +86,39 @@ policy_files = list(selected_policy_folder.glob("*.json"))
 
 print("Total policy JSON files:", len(policy_files))
 
+policy_definition_files = []
+parameter_files = []
+
 for policy_file in policy_files:
-    print("Policy file:", policy_file.name)
+    if policy_file.name.endswith("_policy.json"):
+        policy_definition_files.append(policy_file)
+
+    elif policy_file.name.endswith("_parameters.json"):
+        parameter_files.append(policy_file)
+
+
+if len(policy_definition_files) == 1 and len(parameter_files) == 1:
+    print("Policy definition file:", policy_definition_files[0].name)
+    print("Parameter file:", parameter_files[0].name)   
+elif len(policy_definition_files) == 0:
+    raise SystemExit("No policy definition file found. Deployment stopped.")
+elif len(parameter_files) == 0:
+    raise SystemExit("No parameter file found. Deployment stopped.")
+
+selected_policy_definition_path = POLICY_DIR / args.policy_name / policy_definition_files[0].name
+print("Selected policy definition path:", selected_policy_definition_path)
+selected_parameter_path = POLICY_DIR / args.policy_name / parameter_files[0].name
+print("Selected parameter path:", selected_parameter_path)
+
+def load_policy_definition(policy_definition_path):
+    with open(policy_definition_path, "r") as policy_file:
+        policy_definition = json.load(policy_file)
+    return policy_definition
+
+def load_parameter_file(parameter_path):
+    with open(parameter_path, "r") as parameter_file:
+        parameters = json.load(parameter_file)
+    return parameters
+
+Policy_definition = load_policy_definition(selected_policy_definition_path)
+Parameters = load_parameter_file(selected_parameter_path)
