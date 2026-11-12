@@ -1,0 +1,97 @@
+{
+  "properties": {
+    "displayName": "Restrict Inbound Management and Database Ports on NSGs",
+    "policyType": "Custom",
+    "mode": "All",
+    "description": "Variables\n1.NSG effect \n2.Ports",
+    "metadata": {
+      "category": "Network_Security",
+      "createdBy": "2ae3b268-be88-46a5-9ba3-0301ead97caa",
+      "createdOn": "2026-11-06T18:23:12.6033582Z",
+      "updatedBy": null,
+      "updatedOn": null
+    },
+    "version": "1.0.0",
+    "parameters": {
+      "nsgEffect": {
+        "type": "String",
+        "metadata": {
+          "description": "The effect applied to matching NSG rules.",
+          "displayName": "NSG Policy Effect"
+        },
+        "allowedValues": [
+          "Audit",
+          "Deny",
+          "Disabled"
+        ]
+      },
+      "ports": {
+        "type": "Array",
+        "metadata": {
+          "description": "The list of inbound destination ports to restrict.",
+          "displayName": "Restricted inbound ports"
+        }
+      }
+    },
+    "policyRule": {
+      "if": {
+        "allOf": [
+          {
+            "field": "type",
+            "equals": "Microsoft.Network/networkSecurityGroups"
+          },
+          {
+            "count": {
+              "field": "Microsoft.Network/networkSecurityGroups/securityRules[*]",
+              "where": {
+                "allOf": [
+                  {
+                    "field": "Microsoft.Network/networkSecurityGroups/securityRules[*].direction",
+                    "equals": "Inbound"
+                  },
+                  {
+                    "field": "Microsoft.Network/networkSecurityGroups/securityRules[*].access",
+                    "equals": "Allow"
+                  },
+                  {
+                    "anyOf": [
+                      {
+                        "field": "Microsoft.Network/networkSecurityGroups/securityRules[*].destinationPortRange",
+                        "in": "[parameters('ports')]"
+                      },
+                      {
+                        "count": {
+                          "field": "Microsoft.Network/networkSecurityGroups/securityRules[*].destinationPortRanges[*]",
+                          "where": {
+                            "field": "Microsoft.Network/networkSecurityGroups/securityRules[*].destinationPortRanges[*]",
+                            "in": "[parameters('ports')]"
+                          }
+                        },
+                        "greater": 0
+                      }
+                    ]
+                  }
+                ]
+              }
+            },
+            "greater": 0
+          }
+        ]
+      },
+      "then": {
+        "effect": "[parameters('nsgEffect')]"
+      }
+    }
+  },
+  "id": "/providers/microsoft.management/managementgroups/mg-foundation/providers/Microsoft.Authorization/policyDefinitions/8345161f89e052fda5456984/versions/1.0.0",
+  "type": "Microsoft.Authorization/policyDefinitions/versions",
+  "name": "1.0.0",
+  "systemData": {
+    "createdBy": "netsecer-mahesh@outlook.com",
+    "createdByType": "User",
+    "createdAt": "2026-11-06T18:23:12.5783782Z",
+    "lastModifiedBy": "netsecer-mahesh@outlook.com",
+    "lastModifiedByType": "User",
+    "lastModifiedAt": "2026-11-06T18:23:12.5783782Z"
+  }
+}
