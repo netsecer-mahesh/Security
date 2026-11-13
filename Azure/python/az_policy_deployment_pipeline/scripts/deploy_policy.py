@@ -3,6 +3,7 @@ import json
 import argparse
 import subprocess
 import tempfile
+from unittest import result
 
 
 
@@ -127,6 +128,11 @@ def load_parameter_file(parameter_path):
     return parameters
 
 Policy_definition = load_policy_definition(selected_policy_definition_path)
+print("DEBUG: Policy parameters:")
+print(json.dumps(
+    Policy_definition["properties"]["parameters"],
+    indent=4
+))
 Parameters = load_parameter_file(selected_parameter_path)
 
 print("DEBUG: Both JSON files loaded successfully")
@@ -155,73 +161,122 @@ def identify_policy(policy_name, management_group):
     "--output", "json"
     ]
 
-    result = run_az_command(policy_lookup_command)
-    existing_policies = json.loads(result.stdout)    
-    return existing_policies    
-    
+    command_result = run_az_command(policy_lookup_command)
+    existing_policies = json.loads(command_result.stdout)
+    return existing_policies
+
+print("DEBUG: Starting Azure policy lookup")
+
 existing_policy = identify_policy(
     args.policy_name,
     deployment_config["managementGroup"]
 )
 
-def push_policy(policy_name, management_group, policy_definition):
+print("DEBUG: Azure lookup result:", existing_policy)
 
-    policy_properties = policy_definition["properties"]
 
-    with tempfile.TemporaryDirectory() as temp_dir:
 
-        temp_path = Path(temp_dir)
+def push_policy(policy_name, management_group):
+   
+    policy_rule = {
+        "if": {
+            "field": "type",
+            "equals": "Microsoft.Network/networkSecurityGroups"
+             },
+        "then": {
+             "effect": "[parameters('nsgEffect')]"
+            }
+        }
+    
 
-        # Create temporary JSON files
-        rules_file = temp_path / "rules.json"
-        with open(rules_file, "w", encoding="utf-8") as file:
-            json.dump(policy_properties["policyRule"], file)
+    # Define policy parameters
+    policy_parameters = {
+        "nsgEffect": {
+            "type": "String",
+            "metadata": {
+                "displayName": "NSG Policy Effect",
+                "description": "Effect applied to matching NSG rules."
+            },
+            "allowedValues": [
+                "Audit",
+                "Deny",
+                "Disabled"
+            ],
+            "defaultValue": "Audit"
+        }
+    }
+    
+    policy_definition_file = load_policy_definition(selected_policy_definition_path)
+    parameter_file = load_parameter_file(selected_parameter_path)
+    
+    with tempfile.NamedTemporaryFile(
+    mode="w", suffix=".json", encoding="utf-8",
+    delete=False
+        ) as rules_file:
+        json.dump(policy_definition_file, rules_file)
+    rules_path = rules_file.name
 
-        policy_create_command = [
-            "policy", "definition", "create",
-            "--name", policy_name,
-            "--management-group", management_group,
-            "--display-name", policy_name,
-            "--rules", str(rules_file),
-            "--mode", policy_properties.get("mode", "All"),
-            "--output", "json"
-        ]
+    with tempfile.NamedTemporaryFile(
+    mode="w", suffix=".json", encoding="utf-8",
+    delete=False
+        ) as params_file:
+        json.dump(parameter_file, params_file)
+    params_path = params_file.name
 
-        if policy_properties.get("description"):
-            policy_create_command.extend([
-                "--description", policy_properties["description"]
-            ])
+  
 
-        if policy_properties.get("metadata"):
-            metadata_file = temp_path / "metadata.json"
-            with open(metadata_file, "w", encoding="utf-8") as file:
-                json.dump(policy_properties["metadata"], file)
+    policy_create_command = [
+        "policy",
+        "definition",
+        "create",
+        "--name", policy_name,
+        "--management-group", management_group,
+        "--display-name", policy_name,
+        "--description", "Temporary NSG audit policy for deployment testing",
+        "--mode", "All",
+        "--rules", f"@{rules_path}",
+        "--params", f"@{params_path}",
+        "--output", "json"
+    ]
 
-            policy_create_command.extend([
-                "--metadata", str(metadata_file)
-            ])
+    print("DEBUG: Azure CLI arguments:")
+    for item in policy_create_command:
+        print(repr(item))
 
-        if policy_properties.get("parameters"):
-            params_file = temp_path / "parameters.json"
-            with open(params_file, "w", encoding="utf-8") as file:
-                json.dump(policy_properties["parameters"], file)
+    command_result= run_az_command(policy_create_command)
 
-            policy_create_command.extend([
-                "--params", str(params_file)
-            ])
+    print("Policy creation response:")
+    print(command_result.stdout)
 
-        run_az_command(policy_create_command)
+    return command_result
 
-    # Verify deployment
-    deployed_policy = identify_policy(policy_name, management_group)
 
-    if (
-        len(deployed_policy) == 1
-        and deployed_policy[0]["Name"] == policy_name
-        and deployed_policy[0]["DisplayName"] == policy_name
-    ):
-        print("Policy deployment verified successfully.")
-        return deployed_policy[0]
+if len(existing_policy) == 0:
 
-    else:
-        raise SystemExit("Policy deployment verification failed.")
+    print(
+        "Policy definition not found. Starting deployment in:",
+        deployment_config["managementGroup"]
+    )
+
+    deployed_policy = push_policy(
+        args.policy_name,
+        deployment_config["managementGroup"]
+    )
+
+
+elif len(existing_policy) == 1:
+
+    print("Policy definition found:")
+    print("Resource Name:", existing_policy[0]["Name"])
+    print("Display Name:", existing_policy[0]["DisplayName"])
+    print("Resource ID:", existing_policy[0]["ID"])
+    print("Policy Type:", existing_policy[0]["Type"])
+
+    raise SystemExit(
+        "Policy already exists. Existing-policy workflow not implemented."
+    )
+
+else:
+    raise SystemExit(
+        "Multiple matching policies found. Deployment stopped."
+    )
