@@ -43,6 +43,7 @@ print("SUCCESS: Deployment configuration selected.")
 # SECTION 3: CONFIGURATION LOADING AND VALIDATION
 
 def load_deployment_config(selected_path):
+
     with open(selected_path, "r") as file:
         deployment_config = json.load(file)
 
@@ -63,8 +64,9 @@ def validate_config(config):
 
 
 deployment_config = load_deployment_config(selected_path)
-
 validate_config(deployment_config)
+
+management_group = deployment_config["managementGroup"]
 
 print("SUCCESS: Deployment configuration loaded and validated.")
 
@@ -75,6 +77,11 @@ parser = argparse.ArgumentParser()
 
 parser.add_argument(
     "--initiative-name",
+    required=True
+)
+
+parser.add_argument(
+    "--policy-name",
     required=True
 )
 
@@ -102,7 +109,7 @@ selected_initiative_folder = INITIATIVE_DIR / args.initiative_name
 initiative_files = list(selected_initiative_folder.glob("*.json"))
 
 initiative_definition_files = []
-parameter_files = []
+assignment_parameter_files = []
 
 for initiative_file in initiative_files:
 
@@ -110,7 +117,7 @@ for initiative_file in initiative_files:
         initiative_definition_files.append(initiative_file)
 
     elif initiative_file.name.endswith("_parameters.json"):
-        parameter_files.append(initiative_file)
+        assignment_parameter_files.append(initiative_file)
 
 
 if len(initiative_definition_files) != 1:
@@ -118,9 +125,9 @@ if len(initiative_definition_files) != 1:
         "Expected exactly one initiative definition file. Deployment stopped."
     )
 
-if len(parameter_files) > 1:
+if len(assignment_parameter_files) > 1:
     raise SystemExit(
-        "Expected maximum one parameter file. Deployment stopped."
+        "Expected maximum one assignment parameter file. Deployment stopped."
     )
 
 
@@ -128,61 +135,67 @@ selected_initiative_definition_path = (
     selected_initiative_folder / initiative_definition_files[0].name
 )
 
-selected_parameter_path = (
-    selected_initiative_folder / parameter_files[0].name
-    if parameter_files else None
-)
-
 print("SUCCESS: Initiative folder and definition file identified.")
 
 
 # SECTION 5: INITIATIVE JSON LOADING AND VALIDATION
 
-def load_initiative_definition(initiative_definition_path):
+def load_initiative_definition(definition_path):
 
-    with open(initiative_definition_path, "r") as initiative_file:
+    with open(definition_path, "r") as initiative_file:
         initiative_definition = json.load(initiative_file)
 
     return initiative_definition
-
-
-def load_parameter_file(parameter_path):
-
-    with open(parameter_path, "r") as parameter_file:
-        parameters = json.load(parameter_file)
-
-    return parameters
 
 
 Initiative_definition = load_initiative_definition(
     selected_initiative_definition_path
 )
 
-Assignment_parameters = None
+initiative_properties = Initiative_definition.get("properties")
 
-if selected_parameter_path:
-    Assignment_parameters = load_parameter_file(selected_parameter_path)
-
-
-if not isinstance(Initiative_definition.get("properties"), dict):
+if not isinstance(initiative_properties, dict):
     raise SystemExit(
-        "Invalid initiative JSON structure. Expected properties object."
+        "Invalid initiative JSON. Expected a properties object."
     )
 
 
-initiative_properties = Initiative_definition["properties"]
+initiative_policy_definitions = initiative_properties.get(
+    "policyDefinitions"
+)
 
-if not initiative_properties.get("policyDefinitions"):
+if not isinstance(initiative_policy_definitions, list) or not initiative_policy_definitions:
     raise SystemExit(
-        "No policy definitions found in initiative. Deployment stopped."
+        "Initiative must contain a non-empty policyDefinitions array."
     )
 
-if not isinstance(initiative_properties["policyDefinitions"], list):
+
+expected_policy_id = (
+    f"/providers/Microsoft.Management/managementGroups/{management_group}"
+    f"/providers/Microsoft.Authorization/policyDefinitions/{args.policy_name}"
+)
+
+
+def normalize_resource_id(resource_id):
+
+    return resource_id.strip().rstrip("/").lower()
+
+
+local_policy_ids = [
+    normalize_resource_id(policy.get("policyDefinitionId", ""))
+    for policy in initiative_policy_definitions
+]
+
+
+if normalize_resource_id(expected_policy_id) not in local_policy_ids:
     raise SystemExit(
-        "policyDefinitions must be an array. Deployment stopped."
+        "Target policy is not included in the local initiative JSON. "
+        "Deployment stopped."
     )
 
-print("SUCCESS: Initiative definition loaded and validated.")
+
+print("SUCCESS: Initiative JSON validated.")
+print("Target policy:", args.policy_name)
 
 
 # SECTION 6: AZURE CLI COMMAND EXECUTION
@@ -200,10 +213,24 @@ def run_az_command(command):
 
     if command_result.returncode != 0:
         raise SystemExit(
-            f"Azure CLI command failed: {command_result.stderr}"
+            f"Azure CLI command failed:\n{command_result.stderr}"
         )
 
     return command_result
+
+
+# Verify that the target policy definition exists at the configured MG.
+
+policy_lookup_command = [
+    "policy", "definition", "show",
+    "--name", args.policy_name,
+    "--management-group", management_group,
+    "--output", "json"
+]
+
+policy_result = run_az_command(policy_lookup_command)
+
+print("SUCCESS: Target policy definition exists at MG scope.")
 
 
 # SECTION 7: EXISTING INITIATIVE IDENTIFICATION
@@ -225,31 +252,46 @@ def identify_initiative(initiative_name, management_group):
     return existing_initiatives
 
 
+def get_initiative_details(initiative_name, management_group):
+
+    initiative_show_command = [
+        "policy", "set-definition", "show",
+        "--name", initiative_name,
+        "--management-group", management_group,
+        "--output", "json"
+    ]
+
+    command_result = run_az_command(initiative_show_command)
+
+    return json.loads(command_result.stdout)
+
+
 existing_initiative = identify_initiative(
     args.initiative_name,
-    deployment_config["managementGroup"]
+    management_group
 )
 
 print("SUCCESS: Azure initiative lookup completed.")
 
 
-# SECTION 8: INITIATIVE DEFINITION DEPLOYMENT
+# SECTION 8: INITIATIVE DEPLOYMENT AND UPDATE
 
-def push_initiative(initiative_name, management_group):
-
-    initiative_definitions = initiative_properties["policyDefinitions"]
-
-    initiative_parameters = initiative_properties.get("parameters")
-    initiative_metadata = initiative_properties.get("metadata")
-    initiative_groups = initiative_properties.get("policyDefinitionGroups")
+def push_initiative(initiative_name, management_group, operation):
 
     display_name = initiative_properties.get(
         "displayName",
         initiative_name
     )
 
-    description = initiative_properties.get("description")
-    version = initiative_properties.get("version")
+    description = initiative_properties.get("description", "")
+
+    definitions = initiative_properties["policyDefinitions"]
+
+    parameters = initiative_properties.get("parameters", {})
+    metadata = initiative_properties.get("metadata", {})
+    definition_groups = initiative_properties.get(
+        "policyDefinitionGroups", []
+    )
 
     temporary_files = []
 
@@ -271,55 +313,36 @@ def push_initiative(initiative_name, management_group):
 
     try:
 
-        definitions_path = create_temp_json(initiative_definitions)
+        definitions_path = create_temp_json(definitions)
+        parameters_path = create_temp_json(parameters)
+        metadata_path = create_temp_json(metadata)
+        groups_path = create_temp_json(definition_groups)
 
-        initiative_create_command = [
-            "policy", "set-definition", "create",
+        initiative_command = [
+            "policy", "set-definition", operation,
             "--name", initiative_name,
             "--management-group", management_group,
             "--display-name", display_name,
+            "--description", description,
             "--definitions", f"@{definitions_path}",
+            "--params", f"@{parameters_path}",
+            "--metadata", f"@{metadata_path}",
+            "--definition-groups", f"@{groups_path}",
             "--output", "json"
         ]
 
-        if description:
-            initiative_create_command.extend([
-                "--description", description
+        if initiative_properties.get("version"):
+            initiative_command.extend([
+                "--version",
+                str(initiative_properties["version"])
             ])
 
-        if initiative_parameters:
-            params_path = create_temp_json(initiative_parameters)
-
-            initiative_create_command.extend([
-                "--params", f"@{params_path}"
-            ])
-
-        if initiative_metadata:
-            metadata_path = create_temp_json(initiative_metadata)
-
-            initiative_create_command.extend([
-                "--metadata", f"@{metadata_path}"
-            ])
-
-        if initiative_groups:
-            groups_path = create_temp_json(initiative_groups)
-
-            initiative_create_command.extend([
-                "--definition-groups", f"@{groups_path}"
-            ])
-
-        if version:
-            initiative_create_command.extend([
-                "--version", str(version)
-            ])
-
-        command_result = run_az_command(
-            initiative_create_command
-        )
+        command_result = run_az_command(initiative_command)
 
         print(
-            f"SUCCESS: Initiative '{initiative_name}' deployed "
-            f"to Management Group '{management_group}'."
+            f"SUCCESS: Initiative '{initiative_name}' "
+            f"{'created' if operation == 'create' else 'updated'} "
+            f"at Management Group '{management_group}'."
         )
 
         return command_result
@@ -334,25 +357,100 @@ def push_initiative(initiative_name, management_group):
 
 if len(existing_initiative) == 0:
 
-    print("Initiative definition not found. Starting deployment.")
+    print("Initiative definition not found.")
+    print("Starting initiative creation.")
 
     deployed_initiative = push_initiative(
         args.initiative_name,
-        deployment_config["managementGroup"]
+        management_group,
+        "create"
     )
+
 
 elif len(existing_initiative) == 1:
 
-    print("Initiative definition already exists.")
+    print("\nExisting initiative definition detected.")
 
-    print("Resource Name:", existing_initiative[0]["Name"])
-    print("Display Name:", existing_initiative[0]["DisplayName"])
-    print("Resource ID:", existing_initiative[0]["ID"])
-    print("Type:", existing_initiative[0]["Type"])
-
-    raise SystemExit(
-        "Deployment stopped. Please review the existing initiative manually."
+    existing_details = get_initiative_details(
+        args.initiative_name,
+        management_group
     )
+
+    # Support both flattened Azure CLI output and properties-wrapped output.
+
+    existing_properties = existing_details.get(
+        "properties",
+        existing_details
+    )
+
+    existing_policy_definitions = existing_properties.get(
+        "policyDefinitions",
+        []
+    )
+
+    print("\nExisting initiative details:")
+    print("Name:", existing_details.get("name"))
+    print("Display Name:", existing_properties.get("displayName"))
+    print("Resource ID:", existing_details.get("id"))
+
+    print("\nPolicies currently included:")
+
+    for policy in existing_policy_definitions:
+
+        print(
+            "-",
+            policy.get("policyDefinitionId"),
+            "| Reference:",
+            policy.get("policyDefinitionReferenceId")
+        )
+
+    existing_policy_ids = [
+        normalize_resource_id(
+            policy.get("policyDefinitionId", "")
+        )
+        for policy in existing_policy_definitions
+    ]
+
+    if normalize_resource_id(expected_policy_id) in existing_policy_ids:
+
+        print("\nTarget policy already exists in this initiative.")
+
+        raise SystemExit(
+            "Deployment stopped. No initiative update required."
+        )
+
+    else:
+
+        print("\nWARNING: Target policy is NOT included in the existing initiative.")
+        print("Target policy:", expected_policy_id)
+
+        print("\nContinuing will update the existing initiative using")
+        print("the complete definition in the local initiative JSON.")
+
+        user_choice = input(
+            "\nContinue with initiative update? [C]ontinue / [A]bort: "
+        ).strip().lower()
+
+        if user_choice == "c":
+
+            updated_initiative = push_initiative(
+                args.initiative_name,
+                management_group,
+                "update"
+            )
+
+        elif user_choice == "a":
+
+            raise SystemExit(
+                "User aborted initiative update. No changes made."
+            )
+
+        else:
+
+            raise SystemExit(
+                "Invalid selection. Deployment stopped."
+            )
+
 
 else:
 
